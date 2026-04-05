@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -77,8 +79,43 @@ pub enum Commands {
     Item {
         key: String,
     },
+    Open {
+        key: String,
+        #[arg(long, help = "Open the Zotero web item page instead of the item's URL")]
+        zotero: bool,
+        #[arg(long, help = "Print the target instead of opening it")]
+        print: bool,
+    },
+    Pdf {
+        key: String,
+        #[arg(short, long, help = "Write the PDF to this path or directory")]
+        output: Option<PathBuf>,
+        #[arg(long, help = "Print the downloaded path instead of opening it")]
+        print: bool,
+    },
+    Add {
+        #[command(subcommand)]
+        command: AddCommands,
+        #[arg(long, help = "Print the item JSON instead of creating it")]
+        dry_run: bool,
+    },
     ResolveUser {
         username: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AddCommands {
+    Doi {
+        doi: String,
+    },
+    Isbn {
+        isbn: String,
+    },
+    Url {
+        url: String,
+        #[arg(long)]
+        title: Option<String>,
     },
 }
 

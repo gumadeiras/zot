@@ -4,11 +4,14 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde_json::Value;
+use uuid::Uuid;
 
 use crate::config::Config;
 
 const API_VERSION_HEADER: &str = "zotero-api-version";
 const API_KEY_HEADER: &str = "zotero-api-key";
+const WRITE_TOKEN_HEADER: &str = "zotero-write-token";
 
 #[derive(Clone)]
 pub struct ZoteroClient {
@@ -85,17 +88,87 @@ impl ZoteroClient {
         self.get_json(&format!("items/{key}"), &[]).await
     }
 
+    pub async fn item_children(&self, key: &str) -> Result<Vec<Item>> {
+        self.get_json(&format!("items/{key}/children"), &[]).await
+    }
+
+    pub async fn item_template(&self, item_type: &str) -> Result<Value> {
+        self.get_json_absolute("items/new", &[("itemType", item_type.to_owned())])
+            .await
+    }
+
+    pub async fn create_item(&self, item: Value) -> Result<WriteSuccess> {
+        let url = self.library_url("items");
+        let response = self
+            .client
+            .post(url)
+            .header(
+                HeaderName::from_static(WRITE_TOKEN_HEADER),
+                Uuid::new_v4().simple().to_string(),
+            )
+            .json(&vec![item])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            if status.as_u16() == 403 && body.contains("Write access denied") {
+                bail!(
+                    "zotero api error {status}: {body}. create a write-enabled Zotero API key to use `zot add`"
+                );
+            }
+            bail!("zotero api error {status}: {body}");
+        }
+
+        let body = response.json::<WriteResponse>().await?;
+        if let Some(success) = body.successful.into_values().next() {
+            return Ok(success);
+        }
+
+        if let Some(failure) = body.failed.into_values().next() {
+            bail!("create failed {}: {}", failure.code, failure.message);
+        }
+
+        bail!("create request returned no successful or failed objects")
+    }
+
+    pub async fn download_authenticated(&self, url: &str) -> Result<Vec<u8>> {
+        let response = self.client.get(url).send().await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("zotero api error {status}: {body}");
+        }
+
+        Ok(response.bytes().await?.to_vec())
+    }
+
     async fn get_json<T>(&self, endpoint: &str, query: &[(&str, String)]) -> Result<T>
     where
         T: DeserializeOwned,
     {
+        let url = self.library_url(endpoint);
+        self.get_json_from_url(&url, query).await
+    }
+
+    async fn get_json_absolute<T>(&self, endpoint: &str, query: &[(&str, String)]) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
         let url = format!(
-            "{}/{}/{}",
+            "{}/{}",
             self.config.api_base.as_str().trim_end_matches('/'),
-            self.config.library_prefix(),
             endpoint
         );
+        self.get_json_from_url(&url, query).await
+    }
 
+    async fn get_json_from_url<T>(&self, url: &str, query: &[(&str, String)]) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
         let response = self.client.get(url).query(query).send().await?;
         let status = response.status();
 
@@ -106,12 +179,25 @@ impl ZoteroClient {
 
         Ok(response.json::<T>().await?)
     }
+
+    fn library_url(&self, endpoint: &str) -> String {
+        format!(
+            "{}/{}/{}",
+            self.config.api_base.as_str().trim_end_matches('/'),
+            self.config.library_prefix(),
+            endpoint
+        )
+    }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Item {
+    #[serde(default)]
     pub key: String,
+    #[serde(default)]
     pub version: i64,
+    #[serde(default)]
+    pub links: ItemLinks,
     pub data: ItemData,
 }
 
@@ -144,6 +230,12 @@ pub struct ItemData {
     pub parent_item: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub publication_title: Option<String>,
+    #[serde(
+        default,
+        alias = "ISBN",
+        deserialize_with = "deserialize_option_stringish"
+    )]
+    pub isbn: Option<String>,
     #[serde(default)]
     pub creators: Vec<Creator>,
 }
@@ -173,6 +265,9 @@ impl ItemData {
         if let Some(doi) = &self.doi {
             bits.push(format!("doi:{doi}"));
         }
+        if let Some(isbn) = &self.isbn {
+            bits.push(format!("isbn:{isbn}"));
+        }
         if let Some(content_type) = &self.content_type {
             bits.push(content_type.clone());
         }
@@ -197,6 +292,28 @@ pub struct Collection {
     pub key: String,
     pub version: i64,
     pub data: CollectionData,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ItemLinks {
+    #[serde(default)]
+    pub alternate: Option<LinkInfo>,
+    #[serde(default)]
+    pub enclosure: Option<LinkInfo>,
+    #[serde(default)]
+    pub attachment: Option<LinkInfo>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct LinkInfo {
+    #[serde(default)]
+    pub href: Option<String>,
+    #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub length: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -255,4 +372,36 @@ where
         Some(Stringish::Bool(false)) | Some(Stringish::Null) | None => Ok(None),
         Some(Stringish::Bool(true)) => Ok(Some("true".to_owned())),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WriteResponse {
+    #[serde(default, alias = "success")]
+    pub successful: std::collections::BTreeMap<String, WriteSuccess>,
+    #[serde(default)]
+    pub failed: std::collections::BTreeMap<String, WriteFailure>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum WriteSuccess {
+    Key(String),
+    Item(Item),
+}
+
+impl WriteSuccess {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Key(key) => key,
+            Self::Item(item) => &item.key,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WriteFailure {
+    #[serde(default)]
+    pub code: u16,
+    #[serde(default)]
+    pub message: String,
 }
