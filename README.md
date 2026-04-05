@@ -37,3 +37,10 @@ zot item ABCD1234
 zot resolve-user gumadeiras
 zot --json search "transformer" --limit 5
 ```
+
+With 1Password:
+
+```bash
+API_KEY=$(op read 'op://Personal/Zotero API/credential')
+zot --username gumadeiras --api-key "$API_KEY" collections --limit 3
+```

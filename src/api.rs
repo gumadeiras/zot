@@ -3,7 +3,7 @@ use reqwest::{
     Client,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 
 use crate::config::Config;
 
@@ -128,17 +128,21 @@ pub struct ItemData {
     pub subject: Option<String>,
     #[serde(default)]
     pub date: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub url: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "DOI",
+        deserialize_with = "deserialize_option_stringish"
+    )]
     pub doi: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub filename: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub content_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub parent_item: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub publication_title: Option<String>,
     #[serde(default)]
     pub creators: Vec<Creator>,
@@ -200,7 +204,7 @@ pub struct Collection {
 pub struct CollectionData {
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_stringish")]
     pub parent_collection: Option<String>,
 }
 
@@ -229,5 +233,26 @@ fn creator_summary(creators: &[Creator]) -> Option<String> {
             ""
         };
         Some(format!("{}{}", names.join(", "), suffix))
+    }
+}
+
+fn deserialize_option_stringish<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stringish {
+        String(String),
+        Bool(bool),
+        Number(serde_json::Number),
+        Null,
+    }
+
+    match Option::<Stringish>::deserialize(deserializer)? {
+        Some(Stringish::String(value)) => Ok(Some(value)),
+        Some(Stringish::Number(value)) => Ok(Some(value.to_string())),
+        Some(Stringish::Bool(false)) | Some(Stringish::Null) | None => Ok(None),
+        Some(Stringish::Bool(true)) => Ok(Some("true".to_owned())),
     }
 }
