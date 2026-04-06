@@ -7,7 +7,7 @@ Current scope:
 - Zotero Web API or local desktop API
 - user, group, or local user library
 - `search`, `collections`, `item`, `open`, `pdf`, `add`, `resolve-user`
-- text or JSON output
+- text or JSON output; JSON input for `add`
 
 ## Auth
 
@@ -48,6 +48,7 @@ zot pdf ABCD1234 --print
 zot resolve-user gumadeiras
 zot --json search "transformer" --limit 5
 zot add --dry-run doi 10.1038/s41467-025-66107-x
+echo '{"itemType":"webpage","title":"Example","url":"https://example.com"}' | zot add --dry-run json
 ```
 
 With 1Password:
@@ -58,6 +59,7 @@ zot --username gumadeiras --api-key "$API_KEY" collections --limit 3
 zot --username gumadeiras --api-key "$API_KEY" open R7G52L39 --print
 zot --username gumadeiras --api-key "$API_KEY" pdf R7G52L39 --print
 zot --username gumadeiras --api-key "$API_KEY" add --dry-run url https://example.com
+zot --json --username gumadeiras --api-key "$API_KEY" item R7G52L39
 ```
 
 With local Zotero desktop:
@@ -66,4 +68,27 @@ With local Zotero desktop:
 zot --local collections --limit 10
 zot --local search "transformer" --limit 5
 zot --local item R7G52L39
+```
+
+## JSON I/O
+
+`--json` emits structured JSON for all commands.
+
+`zot add json` accepts either:
+
+- a single Zotero item object
+- a single-item JSON array
+
+From stdin:
+
+```bash
+cat item.json | zot add --dry-run json
+cat item.json | zot --json add --dry-run json
+```
+
+From a file:
+
+```bash
+zot add --dry-run json item.json
+zot --json add json item.json
 ```

@@ -2,7 +2,7 @@ mod api;
 mod cli;
 mod config;
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, io::Read, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
 use api::{Collection, Item, LinkInfo, WriteSuccess, ZoteroClient};
@@ -45,7 +45,17 @@ async fn main() -> Result<()> {
                     .with_context(|| format!("no URL for item {key}"))?
             };
 
-            if print {
+            if json {
+                if !print {
+                    open_target(&target)?;
+                }
+                print_json(&json!({
+                    "key": key,
+                    "target": target,
+                    "opened": !print,
+                    "source": if zotero { "zotero" } else { "item" },
+                }))?;
+            } else if print {
                 println!("{target}");
             } else {
                 open_target(&target)?;
@@ -56,22 +66,51 @@ async fn main() -> Result<()> {
             let client = ZoteroClient::new(config)?;
             let attachment = resolve_pdf_attachment(&client, &key).await?;
             let path = download_attachment(&client, &attachment, output).await?;
-            if print {
+            if json {
+                if !print {
+                    open_target(path.to_string_lossy().as_ref())?;
+                }
+                print_json(&json!({
+                    "requested_key": key,
+                    "attachment_key": attachment.key,
+                    "path": path,
+                    "opened": !print,
+                }))?;
+            } else if print {
                 println!("{}", path.display());
             } else {
                 open_target(path.to_string_lossy().as_ref())?;
             }
         }
         Commands::Add { command, dry_run } => {
-            let config = Config::from_profile(&profile).await?;
-            let client = ZoteroClient::new(config)?;
-            let item = build_add_item(&client, &command).await?;
-
             if dry_run {
-                println!("{}", serde_json::to_string_pretty(&item)?);
+                let item = match &command {
+                    AddCommands::Json { input } => read_add_json_input(input)?,
+                    _ => {
+                        let config = Config::from_profile(&profile).await?;
+                        let client = ZoteroClient::new(config)?;
+                        build_add_item(&client, &command).await?
+                    }
+                };
+
+                if json {
+                    print_json(&json!({
+                        "dry_run": true,
+                        "item": item,
+                    }))?;
+                } else {
+                    print_json(&item)?;
+                }
             } else {
+                let config = Config::from_profile(&profile).await?;
+                let client = ZoteroClient::new(config)?;
+                let item = build_add_item(&client, &command).await?;
                 let created = client.create_item(item).await?;
-                print_created_item(&created);
+                if json {
+                    print_json(&created_to_json(&created))?;
+                } else {
+                    print_created_item(&created);
+                }
             }
         }
         Commands::ResolveUser { username } => {
@@ -199,6 +238,23 @@ fn print_created_item(created: &WriteSuccess) {
     }
 }
 
+fn created_to_json(created: &WriteSuccess) -> Value {
+    match created {
+        WriteSuccess::Key(key) => json!({
+            "key": key,
+        }),
+        WriteSuccess::Item(item) => json!({
+            "key": item.key,
+            "item": item,
+        }),
+    }
+}
+
+fn print_json(value: &Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
 async fn resolve_pdf_attachment(client: &ZoteroClient, key: &str) -> Result<Item> {
     let item = client.item(key).await?;
     if is_pdf_attachment(&item) {
@@ -285,9 +341,48 @@ fn open_target(target: &str) -> Result<()> {
 
 async fn build_add_item(client: &ZoteroClient, command: &AddCommands) -> Result<Value> {
     match command {
+        AddCommands::Json { input } => read_add_json_input(input),
         AddCommands::Doi { doi } => build_doi_item(client, doi).await,
         AddCommands::Isbn { isbn } => build_isbn_item(client, isbn).await,
         AddCommands::Url { url, title } => build_url_item(client, url, title.as_deref()).await,
+    }
+}
+
+fn read_add_json_input(input: &str) -> Result<Value> {
+    let raw = if input == "-" {
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .context("failed to read JSON from stdin")?;
+        buffer
+    } else {
+        fs::read_to_string(input).with_context(|| format!("failed to read JSON from {input}"))?
+    };
+
+    let value = serde_json::from_str::<Value>(&raw).with_context(|| {
+        if input == "-" {
+            "failed to parse JSON from stdin".to_owned()
+        } else {
+            format!("failed to parse JSON from {input}")
+        }
+    })?;
+
+    normalize_add_json_input(value)
+}
+
+fn normalize_add_json_input(value: Value) -> Result<Value> {
+    match value {
+        Value::Object(_) => Ok(value),
+        Value::Array(mut items) if items.len() == 1 => {
+            let item = items.pop().expect("single-element array");
+            if item.is_object() {
+                Ok(item)
+            } else {
+                bail!("JSON array input must contain exactly one object item")
+            }
+        }
+        Value::Array(_) => bail!("JSON array input must contain exactly one object item"),
+        _ => bail!("JSON input must be a Zotero item object or a single-item array"),
     }
 }
 
@@ -510,5 +605,19 @@ mod tests {
     #[test]
     fn converts_unix_days_to_date() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn normalizes_single_item_json_array() {
+        let item = normalize_add_json_input(json!([{ "itemType": "webpage" }])).expect("item");
+        assert_eq!(item["itemType"], "webpage");
+    }
+
+    #[test]
+    fn rejects_multi_item_json_array() {
+        let err =
+            normalize_add_json_input(json!([{ "itemType": "webpage" }, { "itemType": "book" }]))
+                .expect_err("should reject multi-item arrays");
+        assert!(err.to_string().contains("exactly one object"));
     }
 }

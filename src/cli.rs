@@ -115,6 +115,13 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum AddCommands {
+    Json {
+        #[arg(
+            default_value = "-",
+            help = "Path to a Zotero item JSON object, or - for stdin"
+        )]
+        input: String,
+    },
     Doi {
         doi: String,
     },
