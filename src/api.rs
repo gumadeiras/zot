@@ -93,11 +93,23 @@ impl ZoteroClient {
     }
 
     pub async fn item_template(&self, item_type: &str) -> Result<Value> {
+        if self.config.local {
+            bail!(
+                "`zot add` is not supported in --local mode; use a write-enabled Zotero Web API key"
+            );
+        }
+
         self.get_json_absolute("items/new", &[("itemType", item_type.to_owned())])
             .await
     }
 
     pub async fn create_item(&self, item: Value) -> Result<WriteSuccess> {
+        if self.config.local {
+            bail!(
+                "`zot add` is not supported in --local mode; use a write-enabled Zotero Web API key"
+            );
+        }
+
         let url = self.library_url("items");
         let response = self
             .client
@@ -134,11 +146,22 @@ impl ZoteroClient {
     }
 
     pub async fn download_authenticated(&self, url: &str) -> Result<Vec<u8>> {
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| self.request_error(err))?;
         let status = response.status();
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if self.config.local && body.contains("Local API is not enabled") {
+                bail!(
+                    "local Zotero API is disabled at {}. enable 'Allow other applications on this computer to communicate with Zotero'",
+                    self.config.api_base
+                );
+            }
             bail!("zotero api error {status}: {body}");
         }
 
@@ -169,11 +192,23 @@ impl ZoteroClient {
     where
         T: DeserializeOwned,
     {
-        let response = self.client.get(url).query(query).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .query(query)
+            .send()
+            .await
+            .map_err(|err| self.request_error(err))?;
         let status = response.status();
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if self.config.local && body.contains("Local API is not enabled") {
+                bail!(
+                    "local Zotero API is disabled at {}. enable 'Allow other applications on this computer to communicate with Zotero'",
+                    self.config.api_base
+                );
+            }
             bail!("zotero api error {status}: {body}");
         }
 
@@ -187,6 +222,17 @@ impl ZoteroClient {
             self.config.library_prefix(),
             endpoint
         )
+    }
+
+    fn request_error(&self, err: reqwest::Error) -> anyhow::Error {
+        if self.config.local && err.is_connect() {
+            return anyhow::anyhow!(
+                "failed to connect to the local Zotero API at {}. start Zotero and enable 'Allow other applications on this computer to communicate with Zotero'",
+                self.config.api_base
+            );
+        }
+
+        err.into()
     }
 }
 

@@ -19,9 +19,18 @@ pub struct Cli {
 pub struct ProfileArgs {
     #[arg(
         long,
+        env = "ZOTERO_LOCAL",
+        global = true,
+        conflicts_with_all = ["user_id", "username", "group_id", "api_key"],
+        help = "Use the local Zotero desktop API at http://localhost:23119/api"
+    )]
+    pub local: bool,
+
+    #[arg(
+        long,
         env = "ZOTERO_USER_ID",
         global = true,
-        conflicts_with_all = ["group_id", "username"],
+        conflicts_with_all = ["group_id", "username", "local"],
         help = "Zotero user id"
     )]
     pub user_id: Option<String>,
@@ -30,7 +39,7 @@ pub struct ProfileArgs {
         long,
         env = "ZOTERO_USERNAME",
         global = true,
-        conflicts_with_all = ["user_id", "group_id"],
+        conflicts_with_all = ["user_id", "group_id", "local"],
         help = "Zotero username; resolves numeric user id from profile page"
     )]
     pub username: Option<String>,
@@ -39,7 +48,7 @@ pub struct ProfileArgs {
         long,
         env = "ZOTERO_GROUP_ID",
         global = true,
-        conflicts_with_all = ["user_id", "username"],
+        conflicts_with_all = ["user_id", "username", "local"],
         help = "Zotero group id"
     )]
     pub group_id: Option<String>,

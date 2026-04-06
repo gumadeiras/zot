@@ -14,10 +14,20 @@ pub struct Config {
     pub api_base: Url,
     pub api_key: Option<String>,
     pub library: LibraryScope,
+    pub local: bool,
 }
 
 impl Config {
     pub async fn from_profile(profile: &ProfileArgs) -> Result<Self> {
+        if profile.local {
+            return Ok(Self {
+                api_base: Url::parse("http://localhost:23119/api")?,
+                api_key: None,
+                library: LibraryScope::User("0".to_owned()),
+                local: true,
+            });
+        }
+
         let library = match (&profile.user_id, &profile.username, &profile.group_id) {
             (Some(user_id), None, None) => LibraryScope::User(user_id.clone()),
             (None, Some(username), None) => LibraryScope::User(resolve_user_id(username).await?),
@@ -34,6 +44,7 @@ impl Config {
             api_base: Url::parse(&profile.api_base)?,
             api_key: profile.api_key.clone(),
             library,
+            local: false,
         })
     }
 
@@ -78,7 +89,10 @@ fn extract_profile_user_id(html: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
+    use crate::cli::Cli;
 
     #[test]
     fn extracts_profile_id() {
@@ -93,5 +107,15 @@ mod tests {
     #[test]
     fn rejects_missing_profile_id() {
         assert_eq!(extract_profile_user_id("<html></html>"), None);
+    }
+
+    #[tokio::test]
+    async fn local_profile_defaults_to_users_zero() {
+        let cli = Cli::parse_from(["zot", "--local", "collections"]);
+        let config = Config::from_profile(&cli.profile).await.expect("config");
+        assert!(config.local);
+        assert!(matches!(config.library, LibraryScope::User(id) if id == "0"));
+        assert_eq!(config.api_base.as_str(), "http://localhost:23119/api");
+        assert!(config.api_key.is_none());
     }
 }
