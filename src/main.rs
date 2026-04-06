@@ -85,7 +85,9 @@ async fn main() -> Result<()> {
         Commands::Add { command, dry_run } => {
             if dry_run {
                 let item = match &command {
-                    AddCommands::Json { input } => read_add_json_input(input)?,
+                    AddCommands::Json { value, input } => {
+                        read_add_json_input(value.as_deref(), input)?
+                    }
                     _ => {
                         let config = Config::from_profile(&profile).await?;
                         let client = ZoteroClient::new(config)?;
@@ -341,15 +343,19 @@ fn open_target(target: &str) -> Result<()> {
 
 async fn build_add_item(client: &ZoteroClient, command: &AddCommands) -> Result<Value> {
     match command {
-        AddCommands::Json { input } => read_add_json_input(input),
+        AddCommands::Json { value, input } => read_add_json_input(value.as_deref(), input),
         AddCommands::Doi { doi } => build_doi_item(client, doi).await,
         AddCommands::Isbn { isbn } => build_isbn_item(client, isbn).await,
         AddCommands::Url { url, title } => build_url_item(client, url, title.as_deref()).await,
     }
 }
 
-fn read_add_json_input(input: &str) -> Result<Value> {
-    let raw = if input == "-" {
+fn read_add_json_input(value: Option<&str>, input: &str) -> Result<Value> {
+    let raw = if let Some(value) = value {
+        value.to_owned()
+    } else if looks_like_inline_json(input) {
+        input.to_owned()
+    } else if input == "-" {
         let mut buffer = String::new();
         std::io::stdin()
             .read_to_string(&mut buffer)
@@ -360,7 +366,9 @@ fn read_add_json_input(input: &str) -> Result<Value> {
     };
 
     let value = serde_json::from_str::<Value>(&raw).with_context(|| {
-        if input == "-" {
+        if value.is_some() || looks_like_inline_json(input) {
+            "failed to parse inline JSON input".to_owned()
+        } else if input == "-" {
             "failed to parse JSON from stdin".to_owned()
         } else {
             format!("failed to parse JSON from {input}")
@@ -368,6 +376,11 @@ fn read_add_json_input(input: &str) -> Result<Value> {
     })?;
 
     normalize_add_json_input(value)
+}
+
+fn looks_like_inline_json(input: &str) -> bool {
+    let trimmed = input.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
 }
 
 fn normalize_add_json_input(value: Value) -> Result<Value> {
@@ -619,5 +632,18 @@ mod tests {
             normalize_add_json_input(json!([{ "itemType": "webpage" }, { "itemType": "book" }]))
                 .expect_err("should reject multi-item arrays");
         assert!(err.to_string().contains("exactly one object"));
+    }
+
+    #[test]
+    fn detects_inline_json() {
+        assert!(looks_like_inline_json("{\"itemType\":\"webpage\"}"));
+        assert!(looks_like_inline_json("[{\"itemType\":\"webpage\"}]"));
+        assert!(!looks_like_inline_json("item.json"));
+    }
+
+    #[test]
+    fn parses_inline_json_input() {
+        let item = read_add_json_input(None, "{\"itemType\":\"webpage\"}").expect("item");
+        assert_eq!(item["itemType"], "webpage");
     }
 }

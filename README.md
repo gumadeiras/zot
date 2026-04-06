@@ -49,6 +49,8 @@ zot resolve-user gumadeiras
 zot --json search "transformer" --limit 5
 zot add --dry-run doi 10.1038/s41467-025-66107-x
 echo '{"itemType":"webpage","title":"Example","url":"https://example.com"}' | zot add --dry-run json
+zot add --dry-run json '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
+zot add --dry-run json --value '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
 ```
 
 With 1Password:
@@ -78,6 +80,7 @@ zot --local item R7G52L39
 
 - a single Zotero item object
 - a single-item JSON array
+- inline JSON with `--value` or as the positional `json` argument
 
 From stdin:
 
@@ -91,4 +94,12 @@ From a file:
 ```bash
 zot add --dry-run json item.json
 zot --json add json item.json
+```
+
+Inline:
+
+```bash
+zot add --dry-run json '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
+zot add --dry-run json --value '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
+zot --json add --dry-run json --value '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
 ```
