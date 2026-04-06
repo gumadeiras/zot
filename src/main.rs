@@ -2,7 +2,12 @@ mod api;
 mod cli;
 mod config;
 
-use std::{fs, io::Read, path::PathBuf, process::Command};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result, bail};
 use api::{Collection, Item, LinkInfo, WriteSuccess, ZoteroClient};
@@ -351,31 +356,62 @@ async fn build_add_item(client: &ZoteroClient, command: &AddCommands) -> Result<
 }
 
 fn read_add_json_input(value: Option<&str>, input: &str) -> Result<Value> {
-    let raw = if let Some(value) = value {
-        value.to_owned()
-    } else if looks_like_inline_json(input) {
-        input.to_owned()
-    } else if input == "-" {
-        let mut buffer = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buffer)
-            .context("failed to read JSON from stdin")?;
-        buffer
-    } else {
-        fs::read_to_string(input).with_context(|| format!("failed to read JSON from {input}"))?
-    };
-
-    let value = serde_json::from_str::<Value>(&raw).with_context(|| {
-        if value.is_some() || looks_like_inline_json(input) {
-            "failed to parse inline JSON input".to_owned()
-        } else if input == "-" {
-            "failed to parse JSON from stdin".to_owned()
-        } else {
-            format!("failed to parse JSON from {input}")
-        }
-    })?;
+    let source = resolve_add_json_source(value, input);
+    let raw = read_add_json_raw(&source)?;
+    let value =
+        serde_json::from_str::<Value>(&raw).with_context(|| add_json_parse_error(&source))?;
 
     normalize_add_json_input(value)
+}
+
+enum AddJsonSource<'a> {
+    Inline(&'a str),
+    Stdin,
+    File(&'a Path),
+}
+
+fn resolve_add_json_source<'a>(value: Option<&'a str>, input: &'a str) -> AddJsonSource<'a> {
+    if let Some(value) = value {
+        return AddJsonSource::Inline(value);
+    }
+
+    if input == "-" {
+        return AddJsonSource::Stdin;
+    }
+
+    let path = Path::new(input);
+    if path.exists() {
+        return AddJsonSource::File(path);
+    }
+
+    if looks_like_inline_json(input) {
+        return AddJsonSource::Inline(input);
+    }
+
+    AddJsonSource::File(path)
+}
+
+fn read_add_json_raw(source: &AddJsonSource<'_>) -> Result<String> {
+    match source {
+        AddJsonSource::Inline(value) => Ok((*value).to_owned()),
+        AddJsonSource::Stdin => {
+            let mut buffer = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buffer)
+                .context("failed to read JSON from stdin")?;
+            Ok(buffer)
+        }
+        AddJsonSource::File(path) => fs::read_to_string(path)
+            .with_context(|| format!("failed to read JSON from {}", path.display())),
+    }
+}
+
+fn add_json_parse_error(source: &AddJsonSource<'_>) -> String {
+    match source {
+        AddJsonSource::Inline(_) => "failed to parse inline JSON input".to_owned(),
+        AddJsonSource::Stdin => "failed to parse JSON from stdin".to_owned(),
+        AddJsonSource::File(path) => format!("failed to parse JSON from {}", path.display()),
+    }
 }
 
 fn looks_like_inline_json(input: &str) -> bool {
@@ -597,6 +633,10 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        env,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn extracts_html_title() {
@@ -645,5 +685,39 @@ mod tests {
     fn parses_inline_json_input() {
         let item = read_add_json_input(None, "{\"itemType\":\"webpage\"}").expect("item");
         assert_eq!(item["itemType"], "webpage");
+    }
+
+    #[test]
+    fn prefers_existing_file_path_over_inline_detection() {
+        let path = temp_test_path("[draft].json");
+        fs::write(&path, "{\"itemType\":\"webpage\",\"title\":\"From file\"}").expect("write");
+
+        let item = read_add_json_input(None, path.to_str().expect("utf8 path")).expect("item");
+        assert_eq!(item["title"], "From file");
+
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn explicit_value_beats_file_path() {
+        let path = temp_test_path("item.json");
+        fs::write(&path, "{\"itemType\":\"webpage\",\"title\":\"From file\"}").expect("write");
+
+        let item = read_add_json_input(
+            Some("{\"itemType\":\"webpage\",\"title\":\"Inline\"}"),
+            path.to_str().expect("utf8 path"),
+        )
+        .expect("item");
+        assert_eq!(item["title"], "Inline");
+
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    fn temp_test_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        env::temp_dir().join(format!("zot-test-{nanos}-{name}"))
     }
 }

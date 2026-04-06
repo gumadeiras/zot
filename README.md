@@ -82,6 +82,13 @@ zot --local item R7G52L39
 - a single-item JSON array
 - inline JSON with `--value` or as the positional `json` argument
 
+Resolution order:
+
+1. `--value`
+2. `-` for stdin
+3. an existing file path
+4. inline JSON in the positional argument
+
 From stdin:
 
 ```bash
@@ -93,7 +100,7 @@ From a file:
 
 ```bash
 zot add --dry-run json item.json
-zot --json add json item.json
+zot --json add --dry-run json item.json
 ```
 
 Inline:
