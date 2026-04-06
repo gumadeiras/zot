@@ -151,3 +151,55 @@ impl SearchMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn parses_inline_json_argument_for_add() {
+        let cli = Cli::parse_from([
+            "zot",
+            "add",
+            "--dry-run",
+            "json",
+            "{\"itemType\":\"webpage\"}",
+        ]);
+
+        match cli.command {
+            Commands::Add {
+                dry_run: true,
+                command: AddCommands::Json { value: None, input },
+            } => {
+                assert_eq!(input, "{\"itemType\":\"webpage\"}");
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_explicit_value_for_add_json() {
+        let cli = Cli::parse_from([
+            "zot",
+            "add",
+            "--dry-run",
+            "json",
+            "--value",
+            "{\"itemType\":\"webpage\"}",
+            "item.json",
+        ]);
+
+        match cli.command {
+            Commands::Add {
+                dry_run: true,
+                command: AddCommands::Json { value, input },
+            } => {
+                assert_eq!(value.as_deref(), Some("{\"itemType\":\"webpage\"}"));
+                assert_eq!(input, "item.json");
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
+}
