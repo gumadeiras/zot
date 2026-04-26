@@ -1,7 +1,11 @@
 [package]
 name = "zot"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+description = "Small CLI for Zotero web and desktop APIs"
+homepage = "https://github.com/gumadeiras/zot"
+repository = "https://github.com/gumadeiras/zot"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.100"

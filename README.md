@@ -2,6 +2,19 @@
 
 Small Rust CLI for Zotero.
 
+## Install
+
+```bash
+brew tap gumadeiras/tap
+brew install zot
+```
+
+Or build from source:
+
+```bash
+cargo install --git https://github.com/gumadeiras/zot.git
+```
+
 Current scope:
 
 - Zotero Web API or local desktop API
