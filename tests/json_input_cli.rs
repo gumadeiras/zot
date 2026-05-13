@@ -58,6 +58,24 @@ fn run_zot(args: &[&str], stdin_input: Option<&str>) -> String {
     String::from_utf8(output.stdout).expect("utf8 stdout")
 }
 
+fn run_zot_failure(args: &[&str]) -> String {
+    let output = Command::new(zot_bin())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run zot");
+
+    assert!(
+        !output.status.success(),
+        "zot unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stderr).expect("utf8 stderr")
+}
+
 #[test]
 fn dry_run_json_reads_from_stdin_without_credentials() {
     let stdout = run_zot(
@@ -155,4 +173,18 @@ fn json_output_wraps_dry_run_payload() {
     );
     assert!(stdout.contains("\"dry_run\": true"));
     assert!(stdout.contains("\"title\": \"wrapped\""));
+}
+
+#[test]
+fn delete_requires_yes_before_credentials() {
+    let stderr = run_zot_failure(&["delete", "ITEM1"]);
+
+    assert!(stderr.contains("refusing to delete ITEM1 without --yes"));
+}
+
+#[test]
+fn update_rejects_empty_patch_before_credentials() {
+    let stderr = run_zot_failure(&["update", "ITEM1"]);
+
+    assert!(stderr.contains("no update fields provided"));
 }
