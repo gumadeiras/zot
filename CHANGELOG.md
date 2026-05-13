@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Features
+
+- Added `zot add --collection` and `zot add --tag` for assigning metadata while creating or dry-running items.
+- Added `zot delete` with version-checked, `--yes`-guarded Zotero item deletion and dry-run output.
+- Added `zot update` for version-checked item PATCH updates of titles, URLs, tags, and collection membership.
+- Added `zot attach` for creating imported-file attachment items and uploading local PDFs to Zotero storage.
+- Added `zot groups` for listing groups available from a Zotero user profile.
+- Added pagination and sorting flags for item, search, and collection list commands, including `--start`, `--all`, `--sort`, and `--direction`.
+- Added `zot tags` and `zot items --tag` for listing tags and filtering items by tag.
+- Added `zot children` for listing child attachments and notes under an item.
+- Added `zot export` for exporting items, collections, and library slices as BibTeX, RIS, CSL JSON, or formatted bibliography output.
+- Added `zot items` for listing library, top-level, trashed, and collection items.
+
 ### Changes
 
 - Added tag-driven release automation that runs locked tests, creates GitHub releases, and updates the Homebrew tap.
