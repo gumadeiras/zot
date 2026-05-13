@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-05-13
+
 ### Features
 
 - Added `zot add --collection` and `zot add --tag` for assigning metadata while creating or dry-running items.
