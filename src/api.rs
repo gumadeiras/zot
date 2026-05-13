@@ -1,17 +1,20 @@
 use anyhow::{Context, Result, bail};
 use reqwest::{
-    Client,
+    Client, Response,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::{Config, LibraryScope};
 
 const API_VERSION_HEADER: &str = "zotero-api-version";
 const API_KEY_HEADER: &str = "zotero-api-key";
 const WRITE_TOKEN_HEADER: &str = "zotero-write-token";
+
+#[path = "api_write.rs"]
+mod write;
+pub use write::{AttachmentUpload, FileUploadResult};
 
 #[derive(Clone)]
 pub struct ZoteroClient {
@@ -45,29 +48,41 @@ impl ZoteroClient {
     pub async fn search_items(
         &self,
         query: &str,
-        limit: u16,
+        page: PageRequest,
         qmode: &str,
         include_trashed: bool,
     ) -> Result<Vec<Item>> {
-        let mut params = vec![
-            ("q", query.to_owned()),
-            ("qmode", qmode.to_owned()),
-            ("limit", limit.to_string()),
-            ("sort", "dateModified".to_owned()),
-            ("direction", "desc".to_owned()),
-        ];
+        let mut params = vec![("q", query.to_owned()), ("qmode", qmode.to_owned())];
 
         if include_trashed {
             params.push(("includeTrashed", "1".to_owned()));
         }
 
-        self.get_json("items", &params).await
+        self.get_json_list("items", params, &page).await
+    }
+
+    pub async fn items(&self, request: ItemsRequest) -> Result<Vec<Item>> {
+        let endpoint = request.endpoint()?;
+        let params = request.params();
+        self.get_json_list(&endpoint, params, &request.page).await
+    }
+
+    pub async fn tags(&self, request: TagsRequest) -> Result<Vec<Tag>> {
+        let endpoint = request.endpoint()?;
+        let params = request.params();
+        self.get_json_list(&endpoint, params, &request.page).await
+    }
+
+    pub async fn export(&self, request: ExportRequest) -> Result<String> {
+        let endpoint = request.endpoint()?;
+        let params = request.params();
+        self.get_text(&endpoint, &params).await
     }
 
     pub async fn collections(
         &self,
         query: Option<&str>,
-        limit: u16,
+        page: PageRequest,
         top: bool,
     ) -> Result<Vec<Collection>> {
         let endpoint = if top {
@@ -75,13 +90,29 @@ impl ZoteroClient {
         } else {
             "collections"
         };
-        let mut params = vec![("limit", limit.to_string())];
+        let mut params = Vec::new();
 
         if let Some(query) = query {
             params.push(("q", query.to_owned()));
         }
 
-        self.get_json(endpoint, &params).await
+        self.get_json_list(endpoint, params, &page).await
+    }
+
+    pub async fn groups(&self, limit: u16) -> Result<Vec<Group>> {
+        let LibraryScope::User(user_id) = &self.config.library else {
+            bail!("`zot groups` requires a user library; pass --user-id or --username");
+        };
+
+        if self.config.local {
+            bail!("`zot groups` is not supported in --local mode; pass --user-id or --username");
+        }
+
+        self.get_json_absolute(
+            &format!("users/{user_id}/groups"),
+            &[("limit", limit.to_string())],
+        )
+        .await
     }
 
     pub async fn item(&self, key: &str) -> Result<Item> {
@@ -89,60 +120,15 @@ impl ZoteroClient {
     }
 
     pub async fn item_children(&self, key: &str) -> Result<Vec<Item>> {
-        self.get_json(&format!("items/{key}/children"), &[]).await
+        self.get_json(&item_children_endpoint(key), &[]).await
     }
 
-    pub async fn item_template(&self, item_type: &str) -> Result<Value> {
-        if self.config.local {
-            bail!(
-                "`zot add` is not supported in --local mode; use a write-enabled Zotero Web API key"
-            );
-        }
-
-        self.get_json_absolute("items/new", &[("itemType", item_type.to_owned())])
-            .await
-    }
-
-    pub async fn create_item(&self, item: Value) -> Result<WriteSuccess> {
-        if self.config.local {
-            bail!(
-                "`zot add` is not supported in --local mode; use a write-enabled Zotero Web API key"
-            );
-        }
-
-        let url = self.library_url("items");
-        let response = self
-            .client
-            .post(url)
-            .header(
-                HeaderName::from_static(WRITE_TOKEN_HEADER),
-                Uuid::new_v4().simple().to_string(),
-            )
-            .json(&vec![item])
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            if status.as_u16() == 403 && body.contains("Write access denied") {
-                bail!(
-                    "zotero api error {status}: {body}. create a write-enabled Zotero API key to use `zot add`"
-                );
-            }
-            bail!("zotero api error {status}: {body}");
-        }
-
-        let body = response.json::<WriteResponse>().await?;
-        if let Some(success) = body.successful.into_values().next() {
-            return Ok(success);
-        }
-
-        if let Some(failure) = body.failed.into_values().next() {
-            bail!("create failed {}: {}", failure.code, failure.message);
-        }
-
-        bail!("create request returned no successful or failed objects")
+    pub async fn item_children_limited(&self, key: &str, limit: u16) -> Result<Vec<Item>> {
+        self.get_json(
+            &item_children_endpoint(key),
+            &[("limit", limit.to_string())],
+        )
+        .await
     }
 
     pub async fn download_authenticated(&self, url: &str) -> Result<Vec<u8>> {
@@ -152,18 +138,7 @@ impl ZoteroClient {
             .send()
             .await
             .map_err(|err| self.request_error(err))?;
-        let status = response.status();
-
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            if self.config.local && body.contains("Local API is not enabled") {
-                bail!(
-                    "local Zotero API is disabled at {}. enable 'Allow other applications on this computer to communicate with Zotero'",
-                    self.config.api_base
-                );
-            }
-            bail!("zotero api error {status}: {body}");
-        }
+        let response = self.require_success(response).await?;
 
         Ok(response.bytes().await?.to_vec())
     }
@@ -199,6 +174,59 @@ impl ZoteroClient {
             .send()
             .await
             .map_err(|err| self.request_error(err))?;
+        let response = self.require_success(response).await?;
+
+        Ok(response.json::<T>().await?)
+    }
+
+    async fn get_text(&self, endpoint: &str, query: &[(&str, String)]) -> Result<String> {
+        let url = self.library_url(endpoint);
+        let response = self
+            .client
+            .get(url)
+            .query(query)
+            .send()
+            .await
+            .map_err(|err| self.request_error(err))?;
+        let response = self.require_success(response).await?;
+
+        Ok(response.text().await?)
+    }
+
+    async fn get_json_list<T>(
+        &self,
+        endpoint: &str,
+        params: Vec<(&str, String)>,
+        page: &PageRequest,
+    ) -> Result<Vec<T>>
+    where
+        T: DeserializeOwned,
+    {
+        if !page.all {
+            let params = page.params(params, page.start);
+            return self.get_json(endpoint, &params).await;
+        }
+
+        let mut all = Vec::new();
+        let mut start = page.start;
+
+        loop {
+            let params = page.params(params.clone(), start);
+            let mut chunk = self.get_json::<Vec<T>>(endpoint, &params).await?;
+            let chunk_len = chunk.len();
+            all.append(&mut chunk);
+
+            if chunk_len < page.limit as usize {
+                break;
+            }
+
+            start += chunk_len as u32;
+        }
+
+        Ok(all)
+    }
+
+    async fn require_success(&self, response: Response) -> Result<Response> {
         let status = response.status();
 
         if !status.is_success() {
@@ -212,7 +240,7 @@ impl ZoteroClient {
             bail!("zotero api error {status}: {body}");
         }
 
-        Ok(response.json::<T>().await?)
+        Ok(response)
     }
 
     fn library_url(&self, endpoint: &str) -> String {
@@ -236,6 +264,171 @@ impl ZoteroClient {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PageRequest {
+    pub limit: u16,
+    pub start: u32,
+    pub all: bool,
+    pub sort: Option<String>,
+    pub direction: Option<String>,
+}
+
+impl PageRequest {
+    fn params<'a>(
+        &'a self,
+        mut params: Vec<(&'a str, String)>,
+        start: u32,
+    ) -> Vec<(&'a str, String)> {
+        params.push(("limit", self.limit.to_string()));
+        params.push(("start", start.to_string()));
+
+        if let Some(sort) = &self.sort {
+            params.push(("sort", sort.clone()));
+        }
+
+        if let Some(direction) = &self.direction {
+            params.push(("direction", direction.clone()));
+        }
+
+        params
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportRequest {
+    pub format: String,
+    pub item: Option<String>,
+    pub collection: Option<String>,
+    pub limit: u16,
+    pub top: bool,
+    pub trash: bool,
+    pub style: Option<String>,
+}
+
+impl ExportRequest {
+    fn endpoint(&self) -> Result<String> {
+        if self.item.is_some() && (self.collection.is_some() || self.top || self.trash) {
+            bail!("--item cannot be combined with --collection, --top, or --trash");
+        }
+
+        if let Some(item) = &self.item {
+            return Ok(format!("items/{item}"));
+        }
+
+        item_list_endpoint(self.collection.as_deref(), self.top, self.trash)
+    }
+
+    fn params(&self) -> Vec<(&str, String)> {
+        let mut params = vec![("format", self.format.clone())];
+
+        if self.item.is_none() {
+            params.push(("limit", self.limit.to_string()));
+        }
+
+        if let Some(style) = &self.style {
+            params.push(("style", style.clone()));
+        }
+
+        params
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemsRequest {
+    pub collection: Option<String>,
+    pub page: PageRequest,
+    pub tag: Option<String>,
+    pub top: bool,
+    pub trash: bool,
+}
+
+impl ItemsRequest {
+    fn endpoint(&self) -> Result<String> {
+        item_list_endpoint(self.collection.as_deref(), self.top, self.trash)
+    }
+
+    fn params(&self) -> Vec<(&str, String)> {
+        let mut params = Vec::new();
+
+        if let Some(tag) = &self.tag {
+            params.push(("tag", tag.clone()));
+        }
+
+        params
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TagsRequest {
+    pub item: Option<String>,
+    pub collection: Option<String>,
+    pub page: PageRequest,
+    pub query: Option<String>,
+    pub qmode: String,
+    pub top: bool,
+    pub trash: bool,
+}
+
+impl TagsRequest {
+    fn endpoint(&self) -> Result<String> {
+        if self.item.is_some() && (self.collection.is_some() || self.top || self.trash) {
+            bail!("--item cannot be combined with --collection, --top, or --trash");
+        }
+
+        if let Some(item) = &self.item {
+            return Ok(format!("items/{item}/tags"));
+        }
+
+        item_tags_endpoint(self.collection.as_deref(), self.top, self.trash)
+    }
+
+    fn params(&self) -> Vec<(&str, String)> {
+        let mut params = vec![("qmode", self.qmode.clone())];
+
+        if let Some(query) = &self.query {
+            params.push(("q", query.clone()));
+        }
+
+        params
+    }
+}
+
+fn item_list_endpoint(collection: Option<&str>, top: bool, trash: bool) -> Result<String> {
+    if trash {
+        if collection.is_some() || top {
+            bail!("--trash cannot be combined with --collection or --top");
+        }
+        return Ok("items/trash".to_owned());
+    }
+
+    match (collection, top) {
+        (Some(collection), true) => Ok(format!("collections/{collection}/items/top")),
+        (Some(collection), false) => Ok(format!("collections/{collection}/items")),
+        (None, true) => Ok("items/top".to_owned()),
+        (None, false) => Ok("items".to_owned()),
+    }
+}
+
+fn item_tags_endpoint(collection: Option<&str>, top: bool, trash: bool) -> Result<String> {
+    if trash {
+        if collection.is_some() || top {
+            bail!("--trash cannot be combined with --collection or --top");
+        }
+        return Ok("items/trash/tags".to_owned());
+    }
+
+    match (collection, top) {
+        (Some(collection), true) => Ok(format!("collections/{collection}/items/top/tags")),
+        (Some(collection), false) => Ok(format!("collections/{collection}/items/tags")),
+        (None, true) => Ok("items/top/tags".to_owned()),
+        (None, false) => Ok("tags".to_owned()),
+    }
+}
+
+fn item_children_endpoint(key: &str) -> String {
+    format!("items/{key}/children")
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Item {
     #[serde(default)]
@@ -246,6 +439,43 @@ pub struct Item {
     pub links: ItemLinks,
     pub data: ItemData,
 }
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Tag {
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default, rename = "type")]
+    pub tag_type: Option<i64>,
+    #[serde(default)]
+    pub meta: Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Group {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub data: GroupData,
+    #[serde(default)]
+    pub meta: Value,
+    #[serde(default)]
+    pub links: Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupData {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, rename = "type")]
+    pub group_type: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[cfg(test)]
+#[path = "api_tests.rs"]
+mod tests;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
