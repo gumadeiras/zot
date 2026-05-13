@@ -123,3 +123,8 @@ zot add --dry-run json '{"itemType":"webpage","title":"Example","url":"https://e
 zot add --dry-run json --value '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
 zot --json add --dry-run json --value '{"itemType":"webpage","title":"Example","url":"https://example.com"}'
 ```
+
+## Release
+
+Tag pushes like `vX.Y.Z` run the release workflow: `cargo test --locked`,
+GitHub release, and `gumadeiras/homebrew-tap` update.

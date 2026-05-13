@@ -1,0 +1,97 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Derive release version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "ZOT_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Check tap token
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "missing HOMEBREW_TAP_TOKEN secret" >&2
+            exit 1
+          fi
+
+      - name: Check version
+        run: |
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$cargo_version" != "$ZOT_RELEASE_VERSION" ]; then
+            echo "Cargo.toml version is $cargo_version, expected $ZOT_RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Publish GitHub release
+        run: |
+          printf '%s\n' \
+            "zot ${ZOT_RELEASE_VERSION}" \
+            "" \
+            "Install:" \
+            "- \`brew install gumadeiras/tap/zot\`" \
+            > RELEASE_NOTES.md
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --draft=false \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file RELEASE_NOTES.md
+          fi
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: gumadeiras/homebrew-tap
+          token: ${{ env.TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew formula
+        run: |
+          source_url="https://github.com/gumadeiras/zot/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          tmp="$(mktemp)"
+          curl -fsSL "$source_url" -o "$tmp"
+          sha256="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+          rm -f "$tmp"
+
+          python homebrew-tap/scripts/update_formula.py \
+            --formula homebrew-tap/Formula/zot.rb \
+            --url "$source_url" \
+            --sha256 "$sha256"
+
+      - name: Commit and push formula
+        working-directory: homebrew-tap
+        run: |
+          if git diff --quiet -- Formula/zot.rb; then
+            echo "Formula/zot.rb already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/zot.rb
+          git commit -m "Update zot to ${ZOT_RELEASE_VERSION}"
+          git push
