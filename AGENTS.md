@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Git
+
+- Commit with `scripts/committer "<subject>" -- <path>...`; it stages only listed paths. Use `--body` or `--body-file` for commit bodies.
+
 ## Work Style
 
 - Keep changes surgical. Match the current small-Rust-CLI shape.
