@@ -17,7 +17,7 @@ use config::{Config, resolve_user_id};
 use regex::Regex;
 use serde_json::{Value, json};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let Cli {
