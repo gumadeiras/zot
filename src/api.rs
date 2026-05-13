@@ -432,7 +432,7 @@ pub struct WriteResponse {
 #[serde(untagged)]
 pub enum WriteSuccess {
     Key(String),
-    Item(Item),
+    Item(Box<Item>),
 }
 
 impl WriteSuccess {

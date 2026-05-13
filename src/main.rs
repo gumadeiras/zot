@@ -298,13 +298,37 @@ async fn download_attachment(
         .and_then(|link| link.href.clone())
         .with_context(|| format!("attachment {} has no download URL", attachment.key))?;
 
-    let bytes = client.download_authenticated(&href).await?;
+    let bytes = read_attachment_bytes(client, &href).await?;
     let path = resolve_output_path(attachment, output)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&path, bytes)?;
     Ok(path)
+}
+
+async fn read_attachment_bytes(client: &ZoteroClient, href: &str) -> Result<Vec<u8>> {
+    if let Some(path) = attachment_file_path(href)? {
+        return fs::read(&path)
+            .with_context(|| format!("failed to read attachment file {}", path.display()));
+    }
+
+    client.download_authenticated(href).await
+}
+
+fn attachment_file_path(href: &str) -> Result<Option<PathBuf>> {
+    let Ok(url) = url::Url::parse(href) else {
+        return Ok(None);
+    };
+
+    if url.scheme() != "file" {
+        return Ok(None);
+    }
+
+    let path = url
+        .to_file_path()
+        .map_err(|_| anyhow::anyhow!("invalid file attachment URL: {href}"))?;
+    Ok(Some(path))
 }
 
 fn resolve_output_path(attachment: &Item, output: Option<PathBuf>) -> Result<PathBuf> {
@@ -473,10 +497,10 @@ async fn build_url_item(client: &ZoteroClient, url: &str, title: Option<&str>) -
     set_field(&mut item, "title", json!(page_title));
     set_field(&mut item, "url", json!(url));
     set_field(&mut item, "accessDate", json!(today_utc_date()));
-    if let Ok(parsed) = url::Url::parse(url) {
-        if let Some(host) = parsed.host_str() {
-            set_field(&mut item, "websiteTitle", json!(host));
-        }
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(host) = parsed.host_str()
+    {
+        set_field(&mut item, "websiteTitle", json!(host));
     }
 
     Ok(item)
@@ -658,6 +682,22 @@ mod tests {
     #[test]
     fn converts_unix_days_to_date() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn resolves_local_attachment_file_url() {
+        let path = env::temp_dir().join("zot local attachment.pdf");
+        let url = url::Url::from_file_path(&path).expect("file url");
+
+        assert_eq!(
+            attachment_file_path(url.as_str()).expect("path"),
+            Some(path)
+        );
+        assert_eq!(
+            attachment_file_path("https://api.zotero.org/users/1/items/ABC/file")
+                .expect("not file"),
+            None
+        );
     }
 
     #[test]
