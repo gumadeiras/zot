@@ -33,7 +33,8 @@
 ## Release
 
 - Version tags are `vX.Y.Z`.
-- Before tagging, update `Cargo.toml` version and move changelog entries into the release heading.
+- Use `./scripts/release check <version>` for local preflight.
+- Use `./scripts/release run <version>` only after explicit release approval.
 - Tag pushes run the release workflow, which checks the Cargo version, runs locked tests, publishes the GitHub release, and updates `gumadeiras/homebrew-tap`.
 - Do not publish or tag without explicit user approval.
 
