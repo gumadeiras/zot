@@ -7,6 +7,10 @@
 - Added a local release wrapper for version sync, test gates, tagging, and release workflow verification.
 - Documented the local release wrapper in the repo agent guide.
 
+### Fixes
+
+- Stopped trusting the compromised eMudhra emSign ECC Root CA - G3 and its intermediates by updating `webpki-roots` to 1.0.10 and `rustls-webpki` to 0.103.16.
+
 ## 0.1.2 - 2026-05-13
 
 ### Features
