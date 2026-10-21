@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.3 - 2026-10-21
+
 ### Changes
 
 - Added a local release wrapper for version sync, test gates, tagging, and release workflow verification.
