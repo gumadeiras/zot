@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.4 - 2026-11-01
+
 ### Fixes
 
 - Fixed known security advisories in bundled dependencies by updating `quinn-proto` to 0.11.19, `rustls` to 0.23.46, `tokio` to 1.54.1, `anyhow` to 1.0.104, and `rand` to 0.10.3.
